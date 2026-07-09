@@ -1,0 +1,77 @@
+name: Build Cod Soomaali APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create fresh Flutter project (android only)
+        run: |
+          flutter create --org com.dukoow --project-name cod_soomaali --platforms android build_app
+
+      - name: Copy app source into project
+        run: |
+          rm -rf build_app/lib
+          cp -r app/lib build_app/lib
+          cp app/pubspec.yaml build_app/pubspec.yaml
+
+      - name: Download Somali MMS ONNX model (Meta MMS som)
+        run: |
+          mkdir -p build_app/assets/model
+          curl -L --fail --retry 3 -o build_app/assets/model/model.onnx \
+            "https://huggingface.co/willwade/mms-tts-multilingual-models-onnx/resolve/main/som/model.onnx"
+          curl -L --fail --retry 3 -o build_app/assets/model/tokens.txt \
+            "https://huggingface.co/willwade/mms-tts-multilingual-models-onnx/resolve/main/som/tokens.txt"
+          echo "--- Model files downloaded: ---"
+          ls -lh build_app/assets/model/
+          # Sanity check: model must be bigger than 50 MB (real model is ~114 MB)
+          MODEL_SIZE=$(stat -c%s build_app/assets/model/model.onnx)
+          if [ "$MODEL_SIZE" -lt 50000000 ]; then
+            echo "ERROR: model.onnx is too small ($MODEL_SIZE bytes) - download failed or got an HTML error page"
+            head -c 500 build_app/assets/model/model.onnx
+            exit 1
+          fi
+
+      - name: Set app display name
+        run: |
+          sed -i 's/android:label="cod_soomaali"/android:label="Cod Soomaali"/' \
+            build_app/android/app/src/main/AndroidManifest.xml
+
+      - name: Get dependencies
+        working-directory: build_app
+        run: flutter pub get
+
+      - name: Build release APK (arm64 + arm32)
+        working-directory: build_app
+        run: |
+          flutter build apk --release --split-per-abi \
+            --target-platform android-arm64,android-arm
+          ls -lh build/app/outputs/flutter-apk/
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cod-soomaali-apks
+          path: build_app/build/app/outputs/flutter-apk/app-*-release.apk
+          retention-days: 30
