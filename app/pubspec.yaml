@@ -1,7 +1,7 @@
 name: cod_soomaali
 description: "Cod Soomaali - Offline Somali Text-to-Speech (Meta MMS + sherpa-onnx)"
 publish_to: 'none'
-version: 1.1.0+2
+version: 1.1.0+3
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -23,7 +23,8 @@ flutter:
   assets:
     - assets/model/model.onnx
     - assets/model/tokens.txt
-    flutter_launcher_icons:
+
+flutter_launcher_icons:
   android: true
   ios: false
   image_path: "assets/icon/icon_1024.png"
