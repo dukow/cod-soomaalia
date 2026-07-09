@@ -124,20 +124,16 @@ class _TtsHomePageState extends State<TtsHomePage> {
       final outPath =
           '${dir.path}/cod_${DateTime.now().millisecondsSinceEpoch}.wav';
 
-      // Run TTS in a background isolate so the UI never freezes.
-      final modelPath = _modelPath;
-      final tokensPath = _tokensPath;
-      final speed = _speed;
-
-      final resultPath = await Isolate.run(() {
-        return _runTts(
-          modelPath: modelPath,
-          tokensPath: tokensPath,
-          text: text,
-          speed: speed,
-          outPath: outPath,
-        );
-      });
+      // Run TTS in a background isolate via a TOP-LEVEL helper.
+      // Calling Isolate.run directly here would capture this whole State
+      // object (including AudioPlayer) -> "object is unsendable" crash.
+      final resultPath = await runTtsInIsolate(
+        modelPath: _modelPath,
+        tokensPath: _tokensPath,
+        text: text,
+        speed: _speed,
+        outPath: outPath,
+      );
 
       setState(() {
         _lastWavPath = resultPath;
@@ -300,6 +296,27 @@ class _TtsHomePageState extends State<TtsHomePage> {
       ),
     );
   }
+}
+
+/// TOP-LEVEL helper: the closure passed to Isolate.run here can only
+/// capture these five simple String/double parameters — nothing from the
+/// widget State — so the isolate message is always sendable.
+Future<String> runTtsInIsolate({
+  required String modelPath,
+  required String tokensPath,
+  required String text,
+  required double speed,
+  required String outPath,
+}) {
+  return Isolate.run(() {
+    return _runTts(
+      modelPath: modelPath,
+      tokensPath: tokensPath,
+      text: text,
+      speed: speed,
+      outPath: outPath,
+    );
+  });
 }
 
 /// Runs entirely inside a background isolate.
