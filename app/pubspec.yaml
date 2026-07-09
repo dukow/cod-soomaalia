@@ -1,0 +1,24 @@
+name: cod_soomaali
+description: "Cod Soomaali - Offline Somali Text-to-Speech (Meta MMS + sherpa-onnx)"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sherpa_onnx: ^1.12.14
+  path_provider: ^2.1.4
+  audioplayers: ^6.1.0
+  share_plus: ^10.1.0
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/model/model.onnx
+    - assets/model/tokens.txt
