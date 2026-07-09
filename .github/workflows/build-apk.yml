@@ -36,6 +36,11 @@ jobs:
           cp -r app/lib build_app/lib
           cp app/pubspec.yaml build_app/pubspec.yaml
 
+      - name: Copy launcher icon into project
+        run: |
+          mkdir -p build_app/assets/icon
+          cp assets/icon/icon_1024.png build_app/assets/icon/icon_1024.png
+
       - name: Download Somali MMS ONNX model (Meta MMS som)
         run: |
           mkdir -p build_app/assets/model
@@ -61,6 +66,10 @@ jobs:
       - name: Get dependencies
         working-directory: build_app
         run: flutter pub get
+
+      - name: Generate launcher icons
+        working-directory: build_app
+        run: dart run flutter_launcher_icons
 
       - name: Build release APK (arm64 + arm32)
         working-directory: build_app
