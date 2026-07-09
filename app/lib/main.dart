@@ -1,18 +1,121 @@
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
+/// App version shown in the UI so you can always verify which build
+/// is actually installed on the phone.
+const String kAppVersion = 'v1.1';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const CodSoomaaliApp());
 }
+
+// =====================================================================
+// TOP-LEVEL TTS entry point for compute().
+//
+// v1.0 crashed with "Illegal argument in isolate message: object is
+// unsendable <- Instance of 'AudioPlayer'": Isolate.run() was given a
+// closure created inside the State's async method, and Dart closures
+// share their enclosing async context, which included the AudioPlayer.
+//
+// v1.1 fix: compute() with a top-level function + a plain
+// Map<String, Object> message. Only strings and a double cross the
+// isolate boundary. Nothing else CAN be captured.
+// =====================================================================
+
+String ttsEntryPoint(Map<String, Object> args) {
+  final modelPath = args['modelPath'] as String;
+  final tokensPath = args['tokensPath'] as String;
+  final text = args['text'] as String;
+  final speed = args['speed'] as double;
+  final outPath = args['outPath'] as String;
+
+  sherpa_onnx.initBindings();
+
+  final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
+    model: modelPath,
+    tokens: tokensPath,
+  );
+  final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
+    vits: vits,
+    numThreads: 2,
+    debug: false,
+    provider: 'cpu',
+  );
+  final config = sherpa_onnx.OfflineTtsConfig(model: modelConfig);
+  final tts = sherpa_onnx.OfflineTts(config);
+
+  try {
+    final chunks = _splitText(text, maxLen: 300);
+
+    final allSamples = <double>[];
+    var sampleRate = 16000;
+
+    for (final chunk in chunks) {
+      final audio = tts.generate(text: chunk, sid: 0, speed: speed);
+      sampleRate = audio.sampleRate;
+      allSamples.addAll(audio.samples);
+      // 0.25 s silence between chunks.
+      allSamples.addAll(List.filled(sampleRate ~/ 4, 0.0));
+    }
+
+    sherpa_onnx.writeWave(
+      filename: outPath,
+      samples: Float32List.fromList(allSamples),
+      sampleRate: sampleRate,
+    );
+    return outPath;
+  } finally {
+    tts.free();
+  }
+}
+
+/// Split text into sentence-based chunks no longer than [maxLen] chars.
+List<String> _splitText(String text, {int maxLen = 300}) {
+  final sentences = text
+      .split(RegExp(r'(?<=[.!?؟\n])\s*'))
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toList();
+
+  if (sentences.isEmpty) return [text];
+
+  final chunks = <String>[];
+  var current = StringBuffer();
+
+  for (final s in sentences) {
+    if (current.isNotEmpty && current.length + s.length + 1 > maxLen) {
+      chunks.add(current.toString());
+      current = StringBuffer();
+    }
+    if (s.length > maxLen) {
+      if (current.isNotEmpty) {
+        chunks.add(current.toString());
+        current = StringBuffer();
+      }
+      for (var i = 0; i < s.length; i += maxLen) {
+        chunks.add(s.substring(i, (i + maxLen).clamp(0, s.length)));
+      }
+      continue;
+    }
+    if (current.isNotEmpty) current.write(' ');
+    current.write(s);
+  }
+  if (current.isNotEmpty) chunks.add(current.toString());
+  return chunks;
+}
+
+// =====================================================================
+// UI
+// =====================================================================
 
 class CodSoomaaliApp extends StatelessWidget {
   const CodSoomaaliApp({super.key});
@@ -124,23 +227,22 @@ class _TtsHomePageState extends State<TtsHomePage> {
       final outPath =
           '${dir.path}/cod_${DateTime.now().millisecondsSinceEpoch}.wav';
 
-      // Run TTS in a background isolate via a TOP-LEVEL helper.
-      // Calling Isolate.run directly here would capture this whole State
-      // object (including AudioPlayer) -> "object is unsendable" crash.
-      final resultPath = await runTtsInIsolate(
-        modelPath: _modelPath,
-        tokensPath: _tokensPath,
-        text: text,
-        speed: _speed,
-        outPath: outPath,
-      );
+      // compute() sends ONLY this plain map to the background isolate.
+      final Map<String, Object> args = {
+        'modelPath': _modelPath,
+        'tokensPath': _tokensPath,
+        'text': text,
+        'speed': _speed,
+        'outPath': outPath,
+      };
+
+      final resultPath = await compute(ttsEntryPoint, args);
 
       setState(() {
         _lastWavPath = resultPath;
         _status = 'Codka waa diyaar! ✅';
       });
 
-      // Auto-play the result.
       await _playPause();
     } catch (e) {
       setState(() => _status = 'Khalad: $e');
@@ -177,6 +279,25 @@ class _TtsHomePageState extends State<TtsHomePage> {
         centerTitle: true,
         backgroundColor: theme.colorScheme.primary,
         foregroundColor: Colors.white,
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  kAppVersion,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -285,7 +406,7 @@ class _TtsHomePageState extends State<TtsHomePage> {
               const SizedBox(height: 8),
               Text(
                 'Codkan wuxuu ku shaqeeyaa telefoonka gudihiisa — internet looma baahna. '
-                'Model: Meta MMS Somali (VITS/ONNX).',
+                'Model: Meta MMS Somali (VITS/ONNX). $kAppVersion',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: Colors.grey.shade600),
                 textAlign: TextAlign.center,
@@ -296,113 +417,4 @@ class _TtsHomePageState extends State<TtsHomePage> {
       ),
     );
   }
-}
-
-/// TOP-LEVEL helper: the closure passed to Isolate.run here can only
-/// capture these five simple String/double parameters — nothing from the
-/// widget State — so the isolate message is always sendable.
-Future<String> runTtsInIsolate({
-  required String modelPath,
-  required String tokensPath,
-  required String text,
-  required double speed,
-  required String outPath,
-}) {
-  return Isolate.run(() {
-    return _runTts(
-      modelPath: modelPath,
-      tokensPath: tokensPath,
-      text: text,
-      speed: speed,
-      outPath: outPath,
-    );
-  });
-}
-
-/// Runs entirely inside a background isolate.
-/// Splits long text into chunks, generates each chunk, concatenates the
-/// audio, and writes a single WAV file. Returns the output path.
-String _runTts({
-  required String modelPath,
-  required String tokensPath,
-  required String text,
-  required double speed,
-  required String outPath,
-}) {
-  sherpa_onnx.initBindings();
-
-  final vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-    model: modelPath,
-    tokens: tokensPath,
-  );
-  final modelConfig = sherpa_onnx.OfflineTtsModelConfig(
-    vits: vits,
-    numThreads: 2,
-    debug: false,
-    provider: 'cpu',
-  );
-  final config = sherpa_onnx.OfflineTtsConfig(model: modelConfig);
-  final tts = sherpa_onnx.OfflineTts(config);
-
-  try {
-    final chunks = _splitText(text, maxLen: 300);
-
-    final allSamples = <double>[];
-    var sampleRate = 16000;
-
-    for (final chunk in chunks) {
-      final audio = tts.generate(text: chunk, sid: 0, speed: speed);
-      sampleRate = audio.sampleRate;
-      allSamples.addAll(audio.samples);
-      // Short pause (0.25 s of silence) between chunks.
-      allSamples.addAll(List.filled(sampleRate ~/ 4, 0.0));
-    }
-
-    final samples = Float32List.fromList(allSamples);
-    sherpa_onnx.writeWave(
-      filename: outPath,
-      samples: samples,
-      sampleRate: sampleRate,
-    );
-    return outPath;
-  } finally {
-    tts.free();
-  }
-}
-
-/// Split text into sentence-based chunks no longer than [maxLen] chars,
-/// so the VITS model stays fast and stable on long text.
-List<String> _splitText(String text, {int maxLen = 300}) {
-  final sentences = text
-      .split(RegExp(r'(?<=[.!?؟\n])\s*'))
-      .map((s) => s.trim())
-      .where((s) => s.isNotEmpty)
-      .toList();
-
-  if (sentences.isEmpty) return [text];
-
-  final chunks = <String>[];
-  var current = StringBuffer();
-
-  for (final s in sentences) {
-    if (current.isNotEmpty && current.length + s.length + 1 > maxLen) {
-      chunks.add(current.toString());
-      current = StringBuffer();
-    }
-    // A single very long sentence: hard-split it.
-    if (s.length > maxLen) {
-      if (current.isNotEmpty) {
-        chunks.add(current.toString());
-        current = StringBuffer();
-      }
-      for (var i = 0; i < s.length; i += maxLen) {
-        chunks.add(s.substring(i, (i + maxLen).clamp(0, s.length)));
-      }
-      continue;
-    }
-    if (current.isNotEmpty) current.write(' ');
-    current.write(s);
-  }
-  if (current.isNotEmpty) chunks.add(current.toString());
-  return chunks;
 }
